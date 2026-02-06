@@ -1,0 +1,45 @@
+﻿name: Daily SUUMO Scrape
+
+on:
+  schedule:
+    - cron: "30 21 * * *" # JST 06:30
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: daily-suumo-scrape
+  cancel-in-progress: false
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run scraper
+        run: python apps/scraper/suumo_scraper.py --output-dir data/processed
+
+      - name: Commit & push results
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/processed data/history
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "daily scrape $(date -u +%F)"
+            git push
+          fi
