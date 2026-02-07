@@ -8,6 +8,12 @@ from pathlib import Path
 
 import pandas as pd
 import streamlit as st
+try:
+    from st_aggrid import AgGrid, GridOptionsBuilder
+
+    AGGRID_AVAILABLE = True
+except ModuleNotFoundError:
+    AGGRID_AVAILABLE = False
 
 st.set_page_config(page_title="奥沢駅 SUUMOダッシュボード", layout="wide")
 
@@ -133,8 +139,12 @@ if latest.empty:
     st.warning("データがありません。先に `python apps/scraper/suumo_scraper.py` を実行してください。")
     st.stop()
 
-last_date = latest["run_date"].iloc[0] if "run_date" in latest.columns else "-"
-st.metric("最新取得日", last_date)
+last_fetched = "-"
+if "fetched_at" in latest.columns and latest["fetched_at"].notna().any():
+    last_fetched = str(latest["fetched_at"].dropna().iloc[0])
+elif "run_date" in latest.columns and latest["run_date"].notna().any():
+    last_fetched = str(latest["run_date"].dropna().iloc[0])
+st.metric("最終取得時間", last_fetched)
 st.metric("最新件数", int(len(latest)))
 
 c1, c2 = st.columns([1, 2])
@@ -154,26 +164,6 @@ with c2:
         st.info("履歴はまだありません。")
     else:
         st.dataframe(runs, use_container_width=True, hide_index=True)
-
-st.subheader("最新物件一覧")
-sub_types = ["すべて"] + sorted(latest["sub_category"].dropna().unique().tolist())
-selected = st.selectbox("sub_category", sub_types, index=0)
-
-address_options = ["すべて"] + sorted(latest["address"].dropna().unique().tolist())
-selected_address = st.selectbox("address", address_options, index=0)
-
-view = latest.copy()
-if selected != "すべて":
-    view = view[view["sub_category"] == selected]
-if selected_address != "すべて":
-    view = view[view["address"] == selected_address]
-
-show_cols = [
-    c
-    for c in ["sub_category", "title", "price_text", "address", "detail_url", "fetched_at"]
-    if c in view.columns
-]
-st.dataframe(view[show_cols], use_container_width=True, hide_index=True)
 
 st.subheader("土地・戸建て 詳細")
 detail_view = latest[latest["sub_category"].isin(["土地", "戸建て(新築)", "戸建て(中古)"])].copy()
@@ -216,28 +206,74 @@ else:
     detail_view["平米単価(円/m2)"] = unit_sqm_raw.fillna(unit_sqm_fb).round(0)
     detail_view["坪単価(円/坪)"] = unit_tsubo_raw.fillna(unit_tsubo_fb).round(0)
 
-    st.dataframe(
-        detail_view[
-            [
-                "sub_category",
-                "title",
-                "price_text",
-                "address",
-                "沿線・駅",
-                "土地面積",
-                "建物面積",
-                "面積(m2)",
-                "面積(坪)",
-                "平米単価(円/m2)",
-                "坪単価(円/坪)",
-                "間取り",
-                "建ぺい率・容積率",
-                "detail_url",
-            ]
-        ],
-        use_container_width=True,
-        hide_index=True,
-    )
+    detail_table = detail_view[
+        [
+            "sub_category",
+            "title",
+            "price_text",
+            "address",
+            "沿線・駅",
+            "土地面積",
+            "建物面積",
+            "面積(m2)",
+            "面積(坪)",
+            "平米単価(円/m2)",
+            "坪単価(円/坪)",
+            "間取り",
+            "建ぺい率・容積率",
+            "detail_url",
+        ]
+    ].copy()
+
+    # Option filters from actual values in records.
+    fcol1, fcol2 = st.columns(2)
+    sub_options = sorted(detail_table["sub_category"].dropna().unique().tolist())
+    with fcol1:
+        selected_sub_categories = st.multiselect(
+            "表示する sub_category",
+            options=sub_options,
+            default=sub_options,
+        )
+
+    filtered_table = detail_table.copy()
+    if selected_sub_categories:
+        filtered_table = filtered_table[filtered_table["sub_category"].isin(selected_sub_categories)]
+    else:
+        filtered_table = filtered_table.iloc[0:0]
+
+    addr_options = sorted(filtered_table["address"].dropna().unique().tolist())
+    with fcol2:
+        selected_addresses = st.multiselect(
+            "表示する address",
+            options=addr_options,
+            default=addr_options,
+        )
+
+    if selected_addresses:
+        filtered_table = filtered_table[filtered_table["address"].isin(selected_addresses)]
+    else:
+        filtered_table = filtered_table.iloc[0:0]
+
+    if filtered_table.empty:
+        st.info("選択条件に一致するデータがありません。")
+    elif AGGRID_AVAILABLE:
+        gb = GridOptionsBuilder.from_dataframe(filtered_table)
+        gb.configure_default_column(filter=True, floatingFilter=True, sortable=True, resizable=True)
+        gb.configure_column("sub_category", filter="agSetColumnFilter")
+        gb.configure_column("address", filter="agSetColumnFilter")
+        grid_options = gb.build()
+        AgGrid(
+            filtered_table,
+            gridOptions=grid_options,
+            fit_columns_on_grid_load=False,
+            allow_unsafe_jscode=False,
+            enable_enterprise_modules=False,
+            height=420,
+            theme="streamlit",
+        )
+    else:
+        st.warning("`st_aggrid` が未インストールです。`pip install streamlit-aggrid` 後に再起動してください。")
+        st.dataframe(filtered_table, use_container_width=True, hide_index=True)
 
 st.subheader("平均坪単価の時系列")
 hist = load_history_listings()
