@@ -333,6 +333,12 @@ def build_configs() -> list[CategoryConfig]:
     ]
 
 
+def parse_run_date(run_date: str | None) -> dt.date:
+    if not run_date:
+        return dt.date.today()
+    return dt.date.fromisoformat(run_date)
+
+
 def save_sqlite(df: pd.DataFrame, sqlite_path: Path, run_date: str) -> None:
     sqlite_path.parent.mkdir(parents=True, exist_ok=True)
     con = sqlite3.connect(sqlite_path)
@@ -395,7 +401,7 @@ def save_sqlite(df: pd.DataFrame, sqlite_path: Path, run_date: str) -> None:
         con.close()
 
 
-def run(output_dir: Path) -> pd.DataFrame:
+def run(output_dir: Path, run_date: dt.date | None = None) -> pd.DataFrame:
     session = requests.Session()
     all_rows: list[dict] = []
 
@@ -427,7 +433,8 @@ def run(output_dir: Path) -> pd.DataFrame:
         "detail_text",
         "detail_url",
     ]
-    run_date = dt.date.today().isoformat()
+    run_dt = run_date or dt.date.today()
+    run_date_str = run_dt.isoformat()
     fetched_at = dt.datetime.now().isoformat(timespec="seconds")
 
     df = pd.DataFrame(all_rows)
@@ -438,7 +445,7 @@ def run(output_dir: Path) -> pd.DataFrame:
         if "price_yen" not in df.columns:
             df["price_yen"] = df["price_text"].fillna("").map(extract_price_yen)
         df = df[~df["address"].map(is_noisy_address)].copy()
-        df["run_date"] = run_date
+        df["run_date"] = run_date_str
         df["fetched_at"] = fetched_at
         # De-duplicate cross-posted listings by requested key:
         # sub_category + area + price + layout
@@ -453,13 +460,13 @@ def run(output_dir: Path) -> pd.DataFrame:
     history_dir.mkdir(parents=True, exist_ok=True)
 
     latest_csv = output_dir / "listings_latest.csv"
-    history_csv = history_dir / f"listings_{dt.date.today().strftime('%Y%m%d')}.csv"
+    history_csv = history_dir / f"listings_{run_dt.strftime('%Y%m%d')}.csv"
     sqlite_path = output_dir / "suumo.db"
 
     df.to_csv(latest_csv, index=False, encoding="utf-8-sig")
     df.to_csv(history_csv, index=False, encoding="utf-8-sig")
     to_db = df.drop(columns=["fetched_at"]) if "fetched_at" in df.columns else df
-    save_sqlite(to_db, sqlite_path, run_date)
+    save_sqlite(to_db, sqlite_path, run_date_str)
 
     return df
 
@@ -467,10 +474,13 @@ def run(output_dir: Path) -> pd.DataFrame:
 def main() -> None:
     parser = argparse.ArgumentParser(description="SUUMO scraper for Okusawa station pages")
     parser.add_argument("--output-dir", default="data/processed", help="Output directory")
+    parser.add_argument("--run-date", default=None, help="Run date in YYYY-MM-DD (default: today)")
     args = parser.parse_args()
 
     output_dir = Path(args.output_dir)
-    df = run(output_dir)
+    target_date = parse_run_date(args.run_date)
+    df = run(output_dir, run_date=target_date)
+
     print(f"records={len(df)}")
     if not df.empty:
         print(df[["sub_category", "title", "price_text", "address"]].head(10).to_string(index=False))

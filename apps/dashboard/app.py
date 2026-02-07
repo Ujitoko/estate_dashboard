@@ -93,6 +93,13 @@ def normalize_text(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+def short_address_label(address: str) -> str:
+    a = normalize_text(address)
+    if a.startswith("東京都"):
+        return a[len("東京都") :]
+    return a
+
+
 def extract_area_sqm(text: str) -> float | None:
     t = normalize_text(text).replace(",", "")
     if not t:
@@ -150,11 +157,16 @@ with c2:
 
 st.subheader("最新物件一覧")
 sub_types = ["すべて"] + sorted(latest["sub_category"].dropna().unique().tolist())
-selected = st.selectbox("絞り込み", sub_types, index=0)
+selected = st.selectbox("sub_category", sub_types, index=0)
+
+address_options = ["すべて"] + sorted(latest["address"].dropna().unique().tolist())
+selected_address = st.selectbox("address", address_options, index=0)
 
 view = latest.copy()
 if selected != "すべて":
     view = view[view["sub_category"] == selected]
+if selected_address != "すべて":
+    view = view[view["address"] == selected_address]
 
 show_cols = [
     c
@@ -292,16 +304,17 @@ else:
         )
         .sort_values("平均坪単価(円/坪)", ascending=False)
     )
+    addr_summary["address_label"] = addr_summary["address"].map(short_address_label)
     addr_summary["平均平米単価(万円/m2)"] = (addr_summary["平均平米単価(円/m2)"] / 10_000).round(2)
     addr_summary["平均坪単価(万円/坪)"] = (addr_summary["平均坪単価(円/坪)"] / 10_000).round(2)
 
     c1, c2 = st.columns(2)
     with c1:
         st.markdown("**平均坪単価（万円/坪）**")
-        st.bar_chart(addr_summary.set_index("address")["平均坪単価(万円/坪)"])
+        st.bar_chart(addr_summary.set_index("address_label")["平均坪単価(万円/坪)"])
     with c2:
         st.markdown("**平均平米単価（万円/m2）**")
-        st.bar_chart(addr_summary.set_index("address")["平均平米単価(万円/m2)"])
+        st.bar_chart(addr_summary.set_index("address_label")["平均平米単価(万円/m2)"])
 
     st.dataframe(
         addr_summary[
