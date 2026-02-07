@@ -77,6 +77,29 @@ def extract_price_yen(price_text: str) -> float | None:
     return float(max(found))
 
 
+def extract_area_sqm(area_text: str) -> float | None:
+    t = normalize_text(area_text).replace(",", "")
+    if not t:
+        return None
+    vals = [float(x) for x in re.findall(r"(\d+(?:\.\d+)?)\s*m\s*2", t)]
+    if vals:
+        return float(sum(vals) / len(vals))
+    return None
+
+
+def extract_area_tsubo(area_text: str) -> float | None:
+    t = normalize_text(area_text).replace(",", "")
+    if not t:
+        return None
+    vals = [float(x) for x in re.findall(r"(\d+(?:\.\d+)?)\s*坪", t)]
+    if vals:
+        return float(sum(vals) / len(vals))
+    sqm = extract_area_sqm(t)
+    if sqm is None:
+        return None
+    return sqm / 3.305785
+
+
 def is_okusawa_3chome(address: str) -> bool:
     n = normalize_text(address)
     if "奥沢" not in n:
@@ -171,6 +194,11 @@ def parse_rent_page(soup: BeautifulSoup) -> list[dict]:
                     "title": title,
                     "address": addr,
                     "price_text": price_fee,
+                    "price_yen": extract_price_yen(price_fee),
+                    "area_sqm": None,
+                    "area_tsubo": None,
+                    "unit_price_per_sqm": None,
+                    "unit_price_per_tsubo": None,
                     "detail_text": f"{floor} | {deposit_key} | {layout_area}",
                     "detail_url": room_url,
                 }
@@ -195,6 +223,12 @@ def parse_baibai_page(soup: BeautifulSoup, sub_category: str) -> list[dict]:
         addr = detail_map.get("所在地", "")
         title = detail_map.get("物件名", "")
         price = detail_map.get("販売価格", "")
+        area_text = detail_map.get("土地面積", "") or detail_map.get("建物面積", "") or detail_map.get("専有面積", "")
+        area_sqm = extract_area_sqm(area_text)
+        area_tsubo = extract_area_tsubo(area_text)
+        price_yen = extract_price_yen(price)
+        unit_per_sqm = (price_yen / area_sqm) if (price_yen is not None and area_sqm and area_sqm > 0) else None
+        unit_per_tsubo = (price_yen / area_tsubo) if (price_yen is not None and area_tsubo and area_tsubo > 0) else None
 
         link = card.select_one("a[href*='nc_']")
         detail_url = absolute(link.get("href", "")) if link else ""
@@ -211,6 +245,11 @@ def parse_baibai_page(soup: BeautifulSoup, sub_category: str) -> list[dict]:
                 "title": title,
                 "address": addr,
                 "price_text": price,
+                "price_yen": price_yen,
+                "area_sqm": area_sqm,
+                "area_tsubo": area_tsubo,
+                "unit_price_per_sqm": unit_per_sqm,
+                "unit_price_per_tsubo": unit_per_tsubo,
                 "detail_text": json.dumps(detail_map, ensure_ascii=False),
                 "detail_url": detail_url,
             }
@@ -286,6 +325,10 @@ def save_sqlite(df: pd.DataFrame, sqlite_path: Path, run_date: str) -> None:
                 address TEXT,
                 price_text TEXT,
                 price_yen REAL,
+                area_sqm REAL,
+                area_tsubo REAL,
+                unit_price_per_sqm REAL,
+                unit_price_per_tsubo REAL,
                 detail_text TEXT,
                 detail_url TEXT,
                 PRIMARY KEY (run_date, sub_category, listing_id)
@@ -295,6 +338,14 @@ def save_sqlite(df: pd.DataFrame, sqlite_path: Path, run_date: str) -> None:
         cols = {row[1] for row in con.execute("PRAGMA table_info(listings)").fetchall()}
         if "price_yen" not in cols:
             con.execute("ALTER TABLE listings ADD COLUMN price_yen REAL")
+        if "area_sqm" not in cols:
+            con.execute("ALTER TABLE listings ADD COLUMN area_sqm REAL")
+        if "area_tsubo" not in cols:
+            con.execute("ALTER TABLE listings ADD COLUMN area_tsubo REAL")
+        if "unit_price_per_sqm" not in cols:
+            con.execute("ALTER TABLE listings ADD COLUMN unit_price_per_sqm REAL")
+        if "unit_price_per_tsubo" not in cols:
+            con.execute("ALTER TABLE listings ADD COLUMN unit_price_per_tsubo REAL")
         con.execute(
             """
             CREATE TABLE IF NOT EXISTS runs (
@@ -342,6 +393,10 @@ def run(output_dir: Path) -> pd.DataFrame:
         "address",
         "price_text",
         "price_yen",
+        "area_sqm",
+        "area_tsubo",
+        "unit_price_per_sqm",
+        "unit_price_per_tsubo",
         "detail_text",
         "detail_url",
     ]
@@ -353,7 +408,8 @@ def run(output_dir: Path) -> pd.DataFrame:
         df = pd.DataFrame(columns=columns)
     else:
         df["address"] = df["address"].fillna("").map(normalize_text)
-        df["price_yen"] = df["price_text"].fillna("").map(extract_price_yen)
+        if "price_yen" not in df.columns:
+            df["price_yen"] = df["price_text"].fillna("").map(extract_price_yen)
         df = df[df["address"].map(is_okusawa_3chome)].copy()
         if df.empty:
             df = pd.DataFrame(columns=columns)

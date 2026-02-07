@@ -39,13 +39,35 @@ def load_history_listings() -> pd.DataFrame:
     con = sqlite3.connect(SQLITE_PATH)
     try:
         cols = {row[1] for row in con.execute("PRAGMA table_info(listings)").fetchall()}
+        if "unit_price_per_tsubo" in cols:
+            return pd.read_sql_query(
+                """
+                SELECT run_date, sub_category, price_text, price_yen, area_sqm, area_tsubo,
+                       unit_price_per_sqm, unit_price_per_tsubo
+                FROM listings
+                ORDER BY run_date
+                """,
+                con,
+            )
         if "price_yen" in cols:
             return pd.read_sql_query(
-                "SELECT run_date, sub_category, price_text, price_yen FROM listings ORDER BY run_date",
+                """
+                SELECT run_date, sub_category, price_text, price_yen,
+                       NULL as area_sqm, NULL as area_tsubo,
+                       NULL as unit_price_per_sqm, NULL as unit_price_per_tsubo
+                FROM listings
+                ORDER BY run_date
+                """,
                 con,
             )
         return pd.read_sql_query(
-            "SELECT run_date, sub_category, price_text, NULL as price_yen FROM listings ORDER BY run_date",
+            """
+            SELECT run_date, sub_category, price_text, NULL as price_yen,
+                   NULL as area_sqm, NULL as area_tsubo,
+                   NULL as unit_price_per_sqm, NULL as unit_price_per_tsubo
+            FROM listings
+            ORDER BY run_date
+            """,
             con,
         )
     finally:
@@ -116,11 +138,18 @@ detail_view = latest[latest["sub_category"].isin(["土地", "戸建て(新築)",
 if detail_view.empty:
     st.info("土地・戸建てのデータがありません。")
 else:
+    for c in ["area_sqm", "area_tsubo", "unit_price_per_sqm", "unit_price_per_tsubo"]:
+        if c not in detail_view.columns:
+            detail_view[c] = None
     detail_view["沿線・駅"] = detail_view["detail_text"].map(lambda x: detail_value(x, "沿線・駅"))
     detail_view["土地面積"] = detail_view["detail_text"].map(lambda x: detail_value(x, "土地面積"))
     detail_view["建物面積"] = detail_view["detail_text"].map(lambda x: detail_value(x, "建物面積"))
     detail_view["間取り"] = detail_view["detail_text"].map(lambda x: detail_value(x, "間取り"))
     detail_view["建ぺい率・容積率"] = detail_view["detail_text"].map(lambda x: detail_value(x, "建ぺい率・容積率"))
+    detail_view["面積(m2)"] = pd.to_numeric(detail_view["area_sqm"], errors="coerce").round(2)
+    detail_view["面積(坪)"] = pd.to_numeric(detail_view["area_tsubo"], errors="coerce").round(2)
+    detail_view["平米単価(円/m2)"] = pd.to_numeric(detail_view["unit_price_per_sqm"], errors="coerce").round(0)
+    detail_view["坪単価(円/坪)"] = pd.to_numeric(detail_view["unit_price_per_tsubo"], errors="coerce").round(0)
     st.dataframe(
         detail_view[
             [
@@ -131,6 +160,10 @@ else:
                 "沿線・駅",
                 "土地面積",
                 "建物面積",
+                "面積(m2)",
+                "面積(坪)",
+                "平米単価(円/m2)",
+                "坪単価(円/坪)",
                 "間取り",
                 "建ぺい率・容積率",
                 "detail_url",
@@ -140,22 +173,22 @@ else:
         hide_index=True,
     )
 
-st.subheader("平均価格の時系列")
+st.subheader("平均坪単価の時系列")
 hist = load_history_listings()
 if hist.empty:
     st.info("時系列データがありません。")
 else:
-    target_categories = ["土地", "戸建て(中古)", "戸建て(新築)", "賃貸"]
+    target_categories = ["土地", "戸建て(中古)", "戸建て(新築)"]
     hist = hist[hist["sub_category"].isin(target_categories)].copy()
-    hist = hist.dropna(subset=["price_yen"])
+    hist = hist.dropna(subset=["unit_price_per_tsubo"])
     if hist.empty:
-        st.info("価格数値データがありません。次回スクレイプ以降に表示されます。")
+        st.info("坪単価データがありません。次回スクレイプ以降に表示されます。")
     else:
         hist["run_date"] = pd.to_datetime(hist["run_date"])
         mean_df = (
-            hist.groupby(["run_date", "sub_category"], as_index=False)["price_yen"]
+            hist.groupby(["run_date", "sub_category"], as_index=False)["unit_price_per_tsubo"]
             .mean()
-            .rename(columns={"price_yen": "avg_price_yen"})
+            .rename(columns={"unit_price_per_tsubo": "avg_tsubo_price_yen"})
         )
         if not runs.empty and "run_date" in runs.columns:
             all_dates = pd.to_datetime(runs["run_date"].dropna().unique())
@@ -163,19 +196,14 @@ else:
             all_dates = mean_df["run_date"].dropna().unique()
         all_dates = pd.DatetimeIndex(sorted(all_dates))
 
-        pivot = mean_df.pivot(index="run_date", columns="sub_category", values="avg_price_yen")
+        pivot = mean_df.pivot(index="run_date", columns="sub_category", values="avg_tsubo_price_yen")
         pivot = pivot.reindex(index=all_dates, columns=target_categories).sort_index()
-
-        st.markdown("**賃貸 平均価格**")
-        st.line_chart(pivot[["賃貸"]])
-
-        st.markdown("**土地・戸建て 平均価格**")
-        st.line_chart(pivot[["土地", "戸建て(中古)", "戸建て(新築)"]])
+        st.line_chart(pivot)
 
         yen_view = mean_df.copy()
-        yen_view["平均価格(万円)"] = (yen_view["avg_price_yen"] / 10_000).round(1)
+        yen_view["平均坪単価(万円/坪)"] = (yen_view["avg_tsubo_price_yen"] / 10_000).round(1)
         st.dataframe(
-            yen_view[["run_date", "sub_category", "平均価格(万円)"]],
+            yen_view[["run_date", "sub_category", "平均坪単価(万円/坪)"]],
             use_container_width=True,
             hide_index=True,
         )
