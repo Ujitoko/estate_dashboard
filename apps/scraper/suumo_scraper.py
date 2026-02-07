@@ -101,6 +101,17 @@ def extract_area_tsubo(area_text: str) -> float | None:
     return sqm / 3.305785
 
 
+def extract_layout_text(text: str) -> str:
+    t = normalize_text(text)
+    if not t:
+        return ""
+    # Remove area and keep the layout token (e.g. "3LDK", "ワンルーム")
+    t = re.sub(r"\d+(?:\.\d+)?\s*(?:m\s*2|m²|㎡)", "", t)
+    t = re.sub(r"\([^)]*\)", "", t)
+    t = re.sub(r"\s+", " ", t).strip()
+    return t
+
+
 def is_noisy_address(address: str) -> bool:
     a = normalize_text(address)
     if not a:
@@ -184,6 +195,9 @@ def parse_rent_page(soup: BeautifulSoup) -> list[dict]:
 
             m_price = re.search(r"\d+(?:\.\d+)?\s*(?:億\d+(?:\.\d+)?万|億|万|円)", price_fee_raw)
             price_fee = normalize_text(m_price.group(0)) if m_price else price_fee_raw
+            area_sqm = extract_area_sqm(layout_area)
+            area_tsubo = extract_area_tsubo(layout_area)
+            layout_text = extract_layout_text(layout_area)
 
             room_link = tr.select_one("a[href*='bc=']")
             room_url = absolute(room_link.get("href", "")) if room_link else detail_url
@@ -201,10 +215,11 @@ def parse_rent_page(soup: BeautifulSoup) -> list[dict]:
                     "address": addr,
                     "price_text": price_fee,
                     "price_yen": extract_price_yen(price_fee),
-                    "area_sqm": None,
-                    "area_tsubo": None,
+                    "area_sqm": area_sqm,
+                    "area_tsubo": area_tsubo,
                     "unit_price_per_sqm": None,
                     "unit_price_per_tsubo": None,
+                    "layout_text": layout_text,
                     "detail_text": f"{floor} | {deposit_key} | {layout_area}",
                     "detail_url": room_url,
                 }
@@ -232,6 +247,7 @@ def parse_baibai_page(soup: BeautifulSoup, sub_category: str) -> list[dict]:
         area_text = detail_map.get("土地面積", "") or detail_map.get("建物面積", "") or detail_map.get("専有面積", "")
         area_sqm = extract_area_sqm(area_text)
         area_tsubo = extract_area_tsubo(area_text)
+        layout_text = normalize_text(detail_map.get("間取り", ""))
         price_yen = extract_price_yen(price)
         unit_per_sqm = (price_yen / area_sqm) if (price_yen is not None and area_sqm and area_sqm > 0) else None
         unit_per_tsubo = (price_yen / area_tsubo) if (price_yen is not None and area_tsubo and area_tsubo > 0) else None
@@ -256,6 +272,7 @@ def parse_baibai_page(soup: BeautifulSoup, sub_category: str) -> list[dict]:
                 "area_tsubo": area_tsubo,
                 "unit_price_per_sqm": unit_per_sqm,
                 "unit_price_per_tsubo": unit_per_tsubo,
+                "layout_text": layout_text,
                 "detail_text": json.dumps(detail_map, ensure_ascii=False),
                 "detail_url": detail_url,
             }
@@ -335,6 +352,7 @@ def save_sqlite(df: pd.DataFrame, sqlite_path: Path, run_date: str) -> None:
                 area_tsubo REAL,
                 unit_price_per_sqm REAL,
                 unit_price_per_tsubo REAL,
+                layout_text TEXT,
                 detail_text TEXT,
                 detail_url TEXT,
                 PRIMARY KEY (run_date, sub_category, listing_id)
@@ -352,6 +370,8 @@ def save_sqlite(df: pd.DataFrame, sqlite_path: Path, run_date: str) -> None:
             con.execute("ALTER TABLE listings ADD COLUMN unit_price_per_sqm REAL")
         if "unit_price_per_tsubo" not in cols:
             con.execute("ALTER TABLE listings ADD COLUMN unit_price_per_tsubo REAL")
+        if "layout_text" not in cols:
+            con.execute("ALTER TABLE listings ADD COLUMN layout_text TEXT")
         con.execute(
             """
             CREATE TABLE IF NOT EXISTS runs (
@@ -403,6 +423,7 @@ def run(output_dir: Path) -> pd.DataFrame:
         "area_tsubo",
         "unit_price_per_sqm",
         "unit_price_per_tsubo",
+        "layout_text",
         "detail_text",
         "detail_url",
     ]
@@ -419,6 +440,12 @@ def run(output_dir: Path) -> pd.DataFrame:
         df = df[~df["address"].map(is_noisy_address)].copy()
         df["run_date"] = run_date
         df["fetched_at"] = fetched_at
+        # De-duplicate cross-posted listings by requested key:
+        # sub_category + area + price + layout
+        df["dedupe_area"] = pd.to_numeric(df.get("area_sqm"), errors="coerce").round(2)
+        df["dedupe_price"] = pd.to_numeric(df.get("price_yen"), errors="coerce").round(0)
+        df["dedupe_layout"] = df.get("layout_text", "").fillna("").map(normalize_text)
+        df = df.drop_duplicates(subset=["sub_category", "dedupe_area", "dedupe_price", "dedupe_layout"])
         df = df[columns].drop_duplicates(subset=["sub_category", "listing_id", "detail_url"])
 
     output_dir.mkdir(parents=True, exist_ok=True)
