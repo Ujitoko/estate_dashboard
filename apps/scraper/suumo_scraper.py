@@ -81,7 +81,8 @@ def extract_area_sqm(area_text: str) -> float | None:
     t = normalize_text(area_text).replace(",", "")
     if not t:
         return None
-    vals = [float(x) for x in re.findall(r"(\d+(?:\.\d+)?)\s*m\s*2", t)]
+    # Supports m2 / m 2 / m² / ㎡
+    vals = [float(x) for x in re.findall(r"(\d+(?:\.\d+)?)\s*(?:m\s*2|m²|㎡)", t)]
     if vals:
         return float(sum(vals) / len(vals))
     return None

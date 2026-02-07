@@ -1,7 +1,9 @@
 ﻿from __future__ import annotations
 
 import json
+import re
 import sqlite3
+import unicodedata
 from pathlib import Path
 
 import pandas as pd
@@ -86,6 +88,34 @@ def detail_value(detail_text: str, key: str) -> str:
     return str(obj.get(key, ""))
 
 
+def normalize_text(text: str) -> str:
+    text = unicodedata.normalize("NFKC", text or "")
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def extract_area_sqm(text: str) -> float | None:
+    t = normalize_text(text).replace(",", "")
+    if not t:
+        return None
+    vals = [float(x) for x in re.findall(r"(\d+(?:\.\d+)?)\s*(?:m\s*2|m²|㎡)", t)]
+    if vals:
+        return float(sum(vals) / len(vals))
+    return None
+
+
+def extract_area_tsubo(text: str) -> float | None:
+    t = normalize_text(text).replace(",", "")
+    if not t:
+        return None
+    vals = [float(x) for x in re.findall(r"(\d+(?:\.\d+)?)\s*坪", t)]
+    if vals:
+        return float(sum(vals) / len(vals))
+    sqm = extract_area_sqm(t)
+    if sqm is None:
+        return None
+    return sqm / 3.305785
+
+
 st.title("奥沢駅 SUUMOダッシュボード")
 st.caption("対象: 賃貸・戸建て(新築/中古)・土地")
 
@@ -138,18 +168,42 @@ detail_view = latest[latest["sub_category"].isin(["土地", "戸建て(新築)",
 if detail_view.empty:
     st.info("土地・戸建てのデータがありません。")
 else:
-    for c in ["area_sqm", "area_tsubo", "unit_price_per_sqm", "unit_price_per_tsubo"]:
+    for c in ["area_sqm", "area_tsubo", "unit_price_per_sqm", "unit_price_per_tsubo", "price_yen"]:
         if c not in detail_view.columns:
             detail_view[c] = None
+
     detail_view["沿線・駅"] = detail_view["detail_text"].map(lambda x: detail_value(x, "沿線・駅"))
     detail_view["土地面積"] = detail_view["detail_text"].map(lambda x: detail_value(x, "土地面積"))
     detail_view["建物面積"] = detail_view["detail_text"].map(lambda x: detail_value(x, "建物面積"))
+    detail_view["専有面積"] = detail_view["detail_text"].map(lambda x: detail_value(x, "専有面積"))
     detail_view["間取り"] = detail_view["detail_text"].map(lambda x: detail_value(x, "間取り"))
     detail_view["建ぺい率・容積率"] = detail_view["detail_text"].map(lambda x: detail_value(x, "建ぺい率・容積率"))
-    detail_view["面積(m2)"] = pd.to_numeric(detail_view["area_sqm"], errors="coerce").round(2)
-    detail_view["面積(坪)"] = pd.to_numeric(detail_view["area_tsubo"], errors="coerce").round(2)
-    detail_view["平米単価(円/m2)"] = pd.to_numeric(detail_view["unit_price_per_sqm"], errors="coerce").round(0)
-    detail_view["坪単価(円/坪)"] = pd.to_numeric(detail_view["unit_price_per_tsubo"], errors="coerce").round(0)
+
+    area_text_fallback = (
+        detail_view["土地面積"].fillna("")
+        + " "
+        + detail_view["建物面積"].fillna("")
+        + " "
+        + detail_view["専有面積"].fillna("")
+    )
+
+    area_sqm_raw = pd.to_numeric(detail_view["area_sqm"], errors="coerce")
+    area_tsubo_raw = pd.to_numeric(detail_view["area_tsubo"], errors="coerce")
+    area_sqm_fb = area_text_fallback.map(extract_area_sqm)
+    area_tsubo_fb = area_text_fallback.map(extract_area_tsubo)
+
+    detail_view["面積(m2)"] = area_sqm_raw.fillna(area_sqm_fb).round(2)
+    detail_view["面積(坪)"] = area_tsubo_raw.fillna(area_tsubo_fb).round(2)
+
+    price_yen = pd.to_numeric(detail_view["price_yen"], errors="coerce")
+    unit_sqm_raw = pd.to_numeric(detail_view["unit_price_per_sqm"], errors="coerce")
+    unit_tsubo_raw = pd.to_numeric(detail_view["unit_price_per_tsubo"], errors="coerce")
+    unit_sqm_fb = price_yen / detail_view["面積(m2)"]
+    unit_tsubo_fb = price_yen / detail_view["面積(坪)"]
+
+    detail_view["平米単価(円/m2)"] = unit_sqm_raw.fillna(unit_sqm_fb).round(0)
+    detail_view["坪単価(円/坪)"] = unit_tsubo_raw.fillna(unit_tsubo_fb).round(0)
+
     st.dataframe(
         detail_view[
             [
