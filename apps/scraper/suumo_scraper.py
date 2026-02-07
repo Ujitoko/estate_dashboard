@@ -101,13 +101,6 @@ def extract_area_tsubo(area_text: str) -> float | None:
     return sqm / 3.305785
 
 
-def is_okusawa_3chome(address: str) -> bool:
-    n = normalize_text(address)
-    if "奥沢" not in n:
-        return False
-    return bool(re.search(r"奥沢\s*([3三])\s*(丁目|[-−ー])?", n))
-
-
 def absolute(url: str) -> str:
     return urljoin(BASE, url)
 
@@ -411,13 +404,9 @@ def run(output_dir: Path) -> pd.DataFrame:
         df["address"] = df["address"].fillna("").map(normalize_text)
         if "price_yen" not in df.columns:
             df["price_yen"] = df["price_text"].fillna("").map(extract_price_yen)
-        df = df[df["address"].map(is_okusawa_3chome)].copy()
-        if df.empty:
-            df = pd.DataFrame(columns=columns)
-        else:
-            df["run_date"] = run_date
-            df["fetched_at"] = fetched_at
-            df = df[columns].drop_duplicates(subset=["sub_category", "listing_id", "detail_url"])
+        df["run_date"] = run_date
+        df["fetched_at"] = fetched_at
+        df = df[columns].drop_duplicates(subset=["sub_category", "listing_id", "detail_url"])
 
     output_dir.mkdir(parents=True, exist_ok=True)
     history_dir = output_dir.parent / "history"

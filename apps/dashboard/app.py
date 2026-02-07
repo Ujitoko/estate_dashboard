@@ -261,3 +261,58 @@ else:
             use_container_width=True,
             hide_index=True,
         )
+
+st.subheader("住所ごとの平均単価（最新）")
+addr_view = latest[latest["sub_category"].isin(["土地", "戸建て(中古)", "戸建て(新築)"])].copy()
+if addr_view.empty:
+    st.info("売買データがありません。")
+else:
+    for c in ["area_sqm", "area_tsubo", "unit_price_per_sqm", "unit_price_per_tsubo", "price_yen"]:
+        if c not in addr_view.columns:
+            addr_view[c] = None
+
+    # Fallback: compute unit prices from price/area when missing.
+    sqm = pd.to_numeric(addr_view["area_sqm"], errors="coerce")
+    tsubo = pd.to_numeric(addr_view["area_tsubo"], errors="coerce")
+    price = pd.to_numeric(addr_view["price_yen"], errors="coerce")
+    unit_sqm = pd.to_numeric(addr_view["unit_price_per_sqm"], errors="coerce").fillna(price / sqm)
+    unit_tsubo = pd.to_numeric(addr_view["unit_price_per_tsubo"], errors="coerce").fillna(price / tsubo)
+
+    addr_view["unit_price_per_sqm"] = unit_sqm
+    addr_view["unit_price_per_tsubo"] = unit_tsubo
+
+    addr_summary = (
+        addr_view.groupby("address", as_index=False)[["unit_price_per_sqm", "unit_price_per_tsubo"]]
+        .mean()
+        .rename(
+            columns={
+                "unit_price_per_sqm": "平均平米単価(円/m2)",
+                "unit_price_per_tsubo": "平均坪単価(円/坪)",
+            }
+        )
+        .sort_values("平均坪単価(円/坪)", ascending=False)
+    )
+    addr_summary["平均平米単価(万円/m2)"] = (addr_summary["平均平米単価(円/m2)"] / 10_000).round(2)
+    addr_summary["平均坪単価(万円/坪)"] = (addr_summary["平均坪単価(円/坪)"] / 10_000).round(2)
+
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown("**平均坪単価（万円/坪）**")
+        st.bar_chart(addr_summary.set_index("address")["平均坪単価(万円/坪)"])
+    with c2:
+        st.markdown("**平均平米単価（万円/m2）**")
+        st.bar_chart(addr_summary.set_index("address")["平均平米単価(万円/m2)"])
+
+    st.dataframe(
+        addr_summary[
+            [
+                "address",
+                "平均坪単価(万円/坪)",
+                "平均平米単価(万円/m2)",
+                "平均坪単価(円/坪)",
+                "平均平米単価(円/m2)",
+            ]
+        ],
+        use_container_width=True,
+        hide_index=True,
+    )
