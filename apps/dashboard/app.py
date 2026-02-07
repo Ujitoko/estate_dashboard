@@ -6,6 +6,7 @@ import sqlite3
 import unicodedata
 from pathlib import Path
 
+import altair as alt
 import pandas as pd
 import streamlit as st
 try:
@@ -50,7 +51,8 @@ def load_history_listings() -> pd.DataFrame:
         if "unit_price_per_tsubo" in cols:
             return pd.read_sql_query(
                 """
-                SELECT run_date, sub_category, price_text, price_yen, area_sqm, area_tsubo,
+                SELECT run_date, sub_category, address, price_text, price_yen, area_sqm, area_tsubo,
+                       detail_text,
                        unit_price_per_sqm, unit_price_per_tsubo
                 FROM listings
                 ORDER BY run_date
@@ -60,7 +62,8 @@ def load_history_listings() -> pd.DataFrame:
         if "price_yen" in cols:
             return pd.read_sql_query(
                 """
-                SELECT run_date, sub_category, price_text, price_yen,
+                SELECT run_date, sub_category, address, price_text, price_yen,
+                       detail_text,
                        NULL as area_sqm, NULL as area_tsubo,
                        NULL as unit_price_per_sqm, NULL as unit_price_per_tsubo
                 FROM listings
@@ -70,7 +73,8 @@ def load_history_listings() -> pd.DataFrame:
             )
         return pd.read_sql_query(
             """
-            SELECT run_date, sub_category, price_text, NULL as price_yen,
+            SELECT run_date, sub_category, address, price_text, NULL as price_yen,
+                   detail_text,
                    NULL as area_sqm, NULL as area_tsubo,
                    NULL as unit_price_per_sqm, NULL as unit_price_per_tsubo
             FROM listings
@@ -127,6 +131,16 @@ def extract_area_tsubo(text: str) -> float | None:
     if sqm is None:
         return None
     return sqm / 3.305785
+
+
+def extract_walk_minutes(text: str) -> float | None:
+    t = normalize_text(text)
+    if not t:
+        return None
+    vals = [int(x) for x in re.findall(r"徒歩\s*(\d+)\s*分", t)]
+    if not vals:
+        return None
+    return float(min(vals))
 
 
 st.title("奥沢駅 SUUMOダッシュボード")
@@ -247,6 +261,7 @@ else:
             "表示する address",
             options=addr_options,
             default=addr_options,
+            format_func=short_address_label,
         )
 
     if selected_addresses:
@@ -275,7 +290,6 @@ else:
         st.warning("`st_aggrid` が未インストールです。`pip install streamlit-aggrid` 後に再起動してください。")
         st.dataframe(filtered_table, use_container_width=True, hide_index=True)
 
-st.subheader("平均坪単価の時系列")
 hist = load_history_listings()
 if hist.empty:
     st.info("時系列データがありません。")
@@ -287,81 +301,53 @@ else:
         st.info("坪単価データがありません。次回スクレイプ以降に表示されます。")
     else:
         hist["run_date"] = pd.to_datetime(hist["run_date"])
-        mean_df = (
-            hist.groupby(["run_date", "sub_category"], as_index=False)["unit_price_per_tsubo"]
-            .mean()
-            .rename(columns={"unit_price_per_tsubo": "avg_tsubo_price_yen"})
-        )
         if not runs.empty and "run_date" in runs.columns:
             all_dates = pd.to_datetime(runs["run_date"].dropna().unique())
         else:
-            all_dates = mean_df["run_date"].dropna().unique()
+            all_dates = hist["run_date"].dropna().unique()
         all_dates = pd.DatetimeIndex(sorted(all_dates))
 
-        pivot = mean_df.pivot(index="run_date", columns="sub_category", values="avg_tsubo_price_yen")
-        pivot = pivot.reindex(index=all_dates, columns=target_categories).sort_index()
-        st.line_chart(pivot)
-
-        yen_view = mean_df.copy()
-        yen_view["平均坪単価(万円/坪)"] = (yen_view["avg_tsubo_price_yen"] / 10_000).round(1)
-        st.dataframe(
-            yen_view[["run_date", "sub_category", "平均坪単価(万円/坪)"]],
-            use_container_width=True,
-            hide_index=True,
-        )
-
-st.subheader("住所ごとの平均単価（最新）")
-addr_view = latest[latest["sub_category"].isin(["土地", "戸建て(中古)", "戸建て(新築)"])].copy()
-if addr_view.empty:
-    st.info("売買データがありません。")
-else:
-    for c in ["area_sqm", "area_tsubo", "unit_price_per_sqm", "unit_price_per_tsubo", "price_yen"]:
-        if c not in addr_view.columns:
-            addr_view[c] = None
-
-    # Fallback: compute unit prices from price/area when missing.
-    sqm = pd.to_numeric(addr_view["area_sqm"], errors="coerce")
-    tsubo = pd.to_numeric(addr_view["area_tsubo"], errors="coerce")
-    price = pd.to_numeric(addr_view["price_yen"], errors="coerce")
-    unit_sqm = pd.to_numeric(addr_view["unit_price_per_sqm"], errors="coerce").fillna(price / sqm)
-    unit_tsubo = pd.to_numeric(addr_view["unit_price_per_tsubo"], errors="coerce").fillna(price / tsubo)
-
-    addr_view["unit_price_per_sqm"] = unit_sqm
-    addr_view["unit_price_per_tsubo"] = unit_tsubo
-
-    addr_summary = (
-        addr_view.groupby("address", as_index=False)[["unit_price_per_sqm", "unit_price_per_tsubo"]]
-        .mean()
-        .rename(
-            columns={
-                "unit_price_per_sqm": "平均平米単価(円/m2)",
-                "unit_price_per_tsubo": "平均坪単価(円/坪)",
+        for cat in target_categories:
+            cat_df = hist[hist["sub_category"] == cat].copy()
+            label_map = {
+                "土地": "土地",
+                "戸建て(中古)": "戸建て（中古）",
+                "戸建て(新築)": "戸建て（新築）",
             }
-        )
-        .sort_values("平均坪単価(円/坪)", ascending=False)
-    )
-    addr_summary["address_label"] = addr_summary["address"].map(short_address_label)
-    addr_summary["平均平米単価(万円/m2)"] = (addr_summary["平均平米単価(円/m2)"] / 10_000).round(2)
-    addr_summary["平均坪単価(万円/坪)"] = (addr_summary["平均坪単価(円/坪)"] / 10_000).round(2)
+            label = label_map.get(cat, cat)
+            if cat_df.empty:
+                st.subheader(label)
+                st.info("データがありません。")
+                continue
 
-    c1, c2 = st.columns(2)
-    with c1:
-        st.markdown("**平均坪単価（万円/坪）**")
-        st.bar_chart(addr_summary.set_index("address_label")["平均坪単価(万円/坪)"])
-    with c2:
-        st.markdown("**平均平米単価（万円/m2）**")
-        st.bar_chart(addr_summary.set_index("address_label")["平均平米単価(万円/m2)"])
+            cat_df["address_label"] = cat_df["address"].map(short_address_label)
+            mean_df = (
+                cat_df.groupby(["run_date", "address_label"], as_index=False)["unit_price_per_tsubo"]
+                .mean()
+                .rename(columns={"unit_price_per_tsubo": "avg_tsubo_price_yen"})
+            )
+            pivot = mean_df.pivot(index="run_date", columns="address_label", values="avg_tsubo_price_yen")
+            pivot = pivot.reindex(index=all_dates).sort_index()
 
-    st.dataframe(
-        addr_summary[
-            [
-                "address",
-                "平均坪単価(万円/坪)",
-                "平均平米単価(万円/m2)",
-                "平均坪単価(円/坪)",
-                "平均平米単価(円/m2)",
-            ]
-        ],
-        use_container_width=True,
-        hide_index=True,
-    )
+            st.subheader(label)
+            st.line_chart(pivot)
+        # Okusawa 3-chome only: hue = walk minutes
+        okusawa3 = cat_df[
+            cat_df["address"]
+            .fillna("")
+            .map(lambda x: bool(re.search(r"奥沢\s*([3三])\s*(丁目|[-−ー])?", normalize_text(x))))
+        ].copy()
+        okusawa3["station_text"] = okusawa3["detail_text"].map(lambda x: detail_value(x, "沿線・駅"))
+        okusawa3["walk_minutes"] = okusawa3["station_text"].map(extract_walk_minutes)
+        okusawa3 = okusawa3.dropna(subset=["walk_minutes"])
+        if not okusawa3.empty:
+            wm_df = (
+                okusawa3.groupby(["run_date", "walk_minutes"], as_index=False)["unit_price_per_tsubo"]
+                .mean()
+                .rename(columns={"unit_price_per_tsubo": "avg_tsubo_price_yen"})
+            )
+            wm_df["walk_label"] = wm_df["walk_minutes"].map(lambda x: f"徒歩{int(x)}分")
+            wm_pivot = wm_df.pivot(index="run_date", columns="walk_label", values="avg_tsubo_price_yen")
+            wm_pivot = wm_pivot.reindex(index=all_dates).sort_index()
+            st.subheader(f"{label}（奥沢3丁目・徒歩分別）")
+            st.line_chart(wm_pivot)
