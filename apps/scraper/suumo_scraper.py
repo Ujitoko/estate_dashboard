@@ -101,6 +101,18 @@ def extract_area_tsubo(area_text: str) -> float | None:
     return sqm / 3.305785
 
 
+def is_noisy_address(address: str) -> bool:
+    a = normalize_text(address)
+    if not a:
+        return True
+    if "の一部" in a:
+        return True
+    # Exclude lot-level addresses like "...奥沢7-22-13"
+    if re.search(r"(奥沢|東玉川|田園調布|等々力)\s*\d+\s*-\s*\d+", a):
+        return True
+    return False
+
+
 def absolute(url: str) -> str:
     return urljoin(BASE, url)
 
@@ -404,6 +416,7 @@ def run(output_dir: Path) -> pd.DataFrame:
         df["address"] = df["address"].fillna("").map(normalize_text)
         if "price_yen" not in df.columns:
             df["price_yen"] = df["price_text"].fillna("").map(extract_price_yen)
+        df = df[~df["address"].map(is_noisy_address)].copy()
         df["run_date"] = run_date
         df["fetched_at"] = fetched_at
         df = df[columns].drop_duplicates(subset=["sub_category", "listing_id", "detail_url"])
