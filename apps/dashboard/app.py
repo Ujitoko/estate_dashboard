@@ -1,10 +1,12 @@
 ﻿from __future__ import annotations
 
+import datetime as dt
 import json
 import re
 import sqlite3
 import unicodedata
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import altair as alt
 import pandas as pd
@@ -21,6 +23,7 @@ st.set_page_config(page_title="奥沢駅 SUUMOダッシュボード", layout="wi
 BASE_DIR = Path(__file__).resolve().parents[2]
 LATEST_CSV = BASE_DIR / "data" / "processed" / "listings_latest.csv"
 SQLITE_PATH = BASE_DIR / "data" / "processed" / "suumo.db"
+JST = ZoneInfo("Asia/Tokyo")
 
 
 @st.cache_data(ttl=300)
@@ -143,6 +146,26 @@ def extract_walk_minutes(text: str) -> float | None:
     return float(min(vals))
 
 
+def format_last_fetched(latest: pd.DataFrame) -> str:
+    if "fetched_at" in latest.columns and latest["fetched_at"].notna().any():
+        raw = str(latest["fetched_at"].dropna().iloc[0]).strip()
+        parsed = pd.to_datetime(raw, errors="coerce")
+        if pd.notna(parsed):
+            ts = parsed.to_pydatetime()
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=dt.timezone.utc)
+            return ts.astimezone(JST).strftime("%Y-%m-%d %H:%M:%S JST")
+        return raw
+    if "run_date" in latest.columns and latest["run_date"].notna().any():
+        raw_date = str(latest["run_date"].dropna().iloc[0]).strip()
+        parsed_date = pd.to_datetime(raw_date, errors="coerce")
+        if pd.notna(parsed_date):
+            d = parsed_date.to_pydatetime().date()
+            return dt.datetime.combine(d, dt.time.min, tzinfo=JST).strftime("%Y-%m-%d")
+        return raw_date
+    return "-"
+
+
 st.title("奥沢駅 SUUMOダッシュボード")
 st.caption("対象: 賃貸・戸建て(新築/中古)・土地")
 
@@ -153,11 +176,7 @@ if latest.empty:
     st.warning("データがありません。先に `python apps/scraper/suumo_scraper.py` を実行してください。")
     st.stop()
 
-last_fetched = "-"
-if "fetched_at" in latest.columns and latest["fetched_at"].notna().any():
-    last_fetched = str(latest["fetched_at"].dropna().iloc[0])
-elif "run_date" in latest.columns and latest["run_date"].notna().any():
-    last_fetched = str(latest["run_date"].dropna().iloc[0])
+last_fetched = format_last_fetched(latest)
 st.metric("最終取得時間", last_fetched)
 st.metric("最新件数", int(len(latest)))
 

@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 from urllib.parse import urljoin, urlparse
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import requests
@@ -21,6 +22,16 @@ HEADERS = {
     "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
     "Accept-Language": "ja,en-US;q=0.9,en;q=0.8",
 }
+
+JST = ZoneInfo("Asia/Tokyo")
+
+
+def now_jst() -> dt.datetime:
+    return dt.datetime.now(tz=JST)
+
+
+def today_jst() -> dt.date:
+    return now_jst().date()
 
 
 @dataclass
@@ -335,7 +346,7 @@ def build_configs() -> list[CategoryConfig]:
 
 def parse_run_date(run_date: str | None) -> dt.date:
     if not run_date:
-        return dt.date.today()
+        return today_jst()
     return dt.date.fromisoformat(run_date)
 
 
@@ -394,7 +405,7 @@ def save_sqlite(df: pd.DataFrame, sqlite_path: Path, run_date: str) -> None:
 
         con.execute(
             "INSERT OR REPLACE INTO runs(run_date,total_records,updated_at) VALUES(?,?,?)",
-            (run_date, int(len(df)), dt.datetime.now().isoformat(timespec="seconds")),
+            (run_date, int(len(df)), now_jst().isoformat(timespec="seconds")),
         )
         con.commit()
     finally:
@@ -433,9 +444,9 @@ def run(output_dir: Path, run_date: dt.date | None = None) -> pd.DataFrame:
         "detail_text",
         "detail_url",
     ]
-    run_dt = run_date or dt.date.today()
+    run_dt = run_date or today_jst()
     run_date_str = run_dt.isoformat()
-    fetched_at = dt.datetime.now().isoformat(timespec="seconds")
+    fetched_at = now_jst().isoformat(timespec="seconds")
 
     df = pd.DataFrame(all_rows)
     if df.empty:
