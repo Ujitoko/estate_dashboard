@@ -41,5 +41,6 @@ jobs:
             echo "No changes to commit"
           else
             git commit -m "daily scrape $(date -u +%F)"
+            git pull --rebase
             git push
           fi
