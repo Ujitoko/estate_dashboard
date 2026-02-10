@@ -139,10 +139,14 @@ def absolute(url: str) -> str:
     return urljoin(BASE, url)
 
 
-def fetch_html(session: requests.Session, url: str) -> str:
-    resp = session.get(url, headers=HEADERS, timeout=30)
-    resp.raise_for_status()
-    return resp.text
+def fetch_html(session: requests.Session, url: str) -> str | None:
+    try:
+        resp = session.get(url, headers=HEADERS, timeout=30)
+        resp.raise_for_status()
+        return resp.text
+    except requests.RequestException as e:
+        print(f"[WARN] fetch failed ({e}): {url}")
+        return None
 
 
 def crawl_list_pages(session: requests.Session, seed_url: str, max_pages: int) -> list[str]:
@@ -156,6 +160,8 @@ def crawl_list_pages(session: requests.Session, seed_url: str, max_pages: int) -
         visited.add(url)
 
         html = fetch_html(session, url)
+        if html is None:
+            continue
         soup = BeautifulSoup(html, "html.parser")
         path_seed = urlparse(seed_url).path
 
@@ -420,6 +426,8 @@ def run(output_dir: Path, run_date: dt.date | None = None) -> pd.DataFrame:
         urls = crawl_list_pages(session, cfg.seed_url, cfg.max_pages)
         for u in urls:
             html = fetch_html(session, u)
+            if html is None:
+                continue
             soup = BeautifulSoup(html, "html.parser")
             if not soup.select(cfg.card_selector):
                 continue
